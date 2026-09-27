@@ -127,6 +127,7 @@ const conf = defineUserConfig({
             sassOptions: {
                 // ignore sass deprecation errors
                 quietDeps: true,
+                silenceDeprecations: ['import'],
             },
         },
         chainWebpack: (chain) => {
