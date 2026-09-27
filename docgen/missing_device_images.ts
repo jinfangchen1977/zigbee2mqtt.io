@@ -3,10 +3,31 @@ import {imageBaseDir} from './constants';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as gis from 'async-g-i-s';
-import * as easyimage from 'easyimage';
-import {execSync} from 'child_process';
+import {execFileSync} from 'child_process';
 
 const missingImagesPath = path.join(__dirname, 'missing-device-images');
+
+// ImageMagick 7 ships a single `magick` binary, ImageMagick 6 separate `convert`/`identify` binaries
+let hasMagickBinary: boolean | undefined;
+function imageMagick(command: 'convert' | 'identify', args: string[]): string {
+    if (hasMagickBinary === undefined) {
+        try {
+            hasMagickBinary = /ImageMagick/.test(execFileSync('magick', ['-version'], {encoding: 'utf8'}));
+        } catch {
+            hasMagickBinary = false;
+        }
+    }
+    return hasMagickBinary ? execFileSync('magick', [command, ...args], {encoding: 'utf8'}) : execFileSync(command, args, {encoding: 'utf8'});
+}
+
+function imageInfo(imagePath: string): {width: number; height: number} {
+    // `[0]` = first frame, in case of animated images
+    const [width, height] = imageMagick('identify', ['-format', '%w %h', `${imagePath}[0]`])
+        .trim()
+        .split(' ')
+        .map(Number);
+    return {width, height};
+}
 
 export async function getMissing(): Promise<{image: string; model: string; vendor: string}[]> {
     const missing: any[] = [];
@@ -23,7 +44,8 @@ export async function getMissing(): Promise<{image: string; model: string; vendo
 }
 
 export async function downloadImage(url: string, path: string) {
-    execSync(`curl ${url} -o ${path}`);
+    // No shell: the url comes from image search results
+    execFileSync('curl', [url, '-o', path]);
     if (!fs.existsSync(path)) {
         throw new Error('failed');
     }
@@ -32,7 +54,7 @@ export async function downloadImage(url: string, path: string) {
 export async function ensurePngWithoutBackground(imagePath: string) {
     if (path.parse(imagePath).ext !== '.png') {
         const imagePathPng = `${path.join(missingImagesPath, path.parse(imagePath).name)}.png`;
-        await easyimage.convert({src: imagePath, dst: imagePathPng});
+        imageMagick('convert', [imagePath, '-auto-orient', imagePathPng]);
         fs.rmSync(imagePath);
         imagePath = imagePathPng;
     }
@@ -64,19 +86,10 @@ export async function downloadMissing() {
                 await downloadImage(image.url, imagePath);
 
                 // Make square
-                const info = await easyimage.info(imagePath);
+                const info = imageInfo(imagePath);
                 if (info.height !== info.width) {
                     const size = Math.max(info.height, info.width);
-                    await easyimage.execute('convert', [
-                        imagePath,
-                        '-resize',
-                        `${size}x${size}`,
-                        '-gravity',
-                        'center',
-                        '-extent',
-                        `${size}x${size}`,
-                        imagePath,
-                    ]);
+                    imageMagick('convert', [imagePath, '-resize', `${size}x${size}`, '-gravity', 'center', '-extent', `${size}x${size}`, imagePath]);
                 }
 
                 // Convert to png
@@ -97,19 +110,10 @@ export async function prepareMissing() {
 
         try {
             // Make square
-            const info = await easyimage.info(imagePath);
+            const info = imageInfo(imagePath);
             if (info.height !== info.width) {
                 const size = Math.max(info.height, info.width);
-                await easyimage.execute('convert', [
-                    imagePath,
-                    '-resize',
-                    `${size}x${size}`,
-                    '-gravity',
-                    'center',
-                    '-extent',
-                    `${size}x${size}`,
-                    imagePath,
-                ]);
+                imageMagick('convert', [imagePath, '-resize', `${size}x${size}`, '-gravity', 'center', '-extent', `${size}x${size}`, imagePath]);
             }
 
             // Convert to png
@@ -132,12 +136,12 @@ async function moveMissing() {
             if (!match) throw new Error(`Failed to match '${name}'`);
             const target = path.join(imageBaseDir, `${match[1]}.png`);
             fs.copyFileSync(source, target);
-            const info = await easyimage.info(target);
+            const info = imageInfo(target);
             if (info.height !== info.width) {
                 throw new Error(`${file} is not a square`);
             }
             const size = info.height >= 512 ? 512 : 150;
-            await easyimage.resize({width: size, height: size, src: target, dst: target});
+            imageMagick('convert', [target, '-auto-orient', '-resize', `${size}x${size}`, target]);
         } catch (error) {
             console.error(`Failed to handle '${file}' (${error})`);
         }
